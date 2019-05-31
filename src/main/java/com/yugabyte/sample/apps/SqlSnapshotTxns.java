@@ -85,7 +85,7 @@ public class SqlSnapshotTxns extends AppBase {
         String.format("DROP TABLE IF EXISTS %s", getTableName()));
     LOG.info("Dropping table(s) left from previous runs if any");
     connection.createStatement().executeUpdate(
-        String.format("CREATE TABLE %s (k text PRIMARY KEY, v text);", getTableName()));
+        String.format("CREATE TABLE %s (k text, v text, PRIMARY KEY(k HASH))", getTableName()));
     LOG.info(String.format("Created table: %s", getTableName()));
   }
 

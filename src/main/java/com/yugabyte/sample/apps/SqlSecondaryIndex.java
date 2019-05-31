@@ -81,12 +81,12 @@ public class SqlSecondaryIndex extends AppBase {
         String.format("DROP TABLE IF EXISTS %s", getTableName()));
     LOG.info("Dropping table(s) left from previous runs if any");
     connection.createStatement().executeUpdate(
-        String.format("CREATE TABLE %s (k text PRIMARY KEY, v text);", getTableName()));
+        String.format("CREATE TABLE %s (k text, v text, PRIMARY KEY(k HASH))", getTableName()));
     LOG.info(String.format("Created table: %s", getTableName()));
 
     // Create an index on the table.
     connection.createStatement().executeUpdate(
-        String.format("CREATE INDEX IF NOT EXISTS %s_index ON %s(v);",
+        String.format("CREATE INDEX IF NOT EXISTS %s_index ON %s(v HASH)",
             getTableName(), getTableName()));
     LOG.info(String.format("Created index on table: %s", getTableName()));
   }

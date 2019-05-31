@@ -81,7 +81,7 @@ public class SqlInserts extends AppBase {
         String.format("DROP TABLE IF EXISTS %s", getTableName()));
     LOG.info("Dropping any table(s) left from previous runs if any");
     connection.createStatement().execute(
-        String.format("CREATE TABLE %s (k text PRIMARY KEY, v text)", getTableName()));
+        String.format("CREATE TABLE %s (k text, v text, PRIMARY KEY(k HASH))", getTableName()));
     LOG.info(String.format("Created table: %s", getTableName()));
   }
 
