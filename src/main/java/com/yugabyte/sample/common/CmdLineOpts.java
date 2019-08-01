@@ -205,6 +205,11 @@ public class CmdLineOpts {
         AppBase.appConfig.batchWrite = true;
       }
       LOG.info("CassandraSecondaryIndex batch write");
+      if (commandLine.hasOption("num_indexes")) {
+        AppBase.appConfig.numIndexes =
+            Integer.parseInt(commandLine.getOptionValue("num_indexes"));
+      }
+      LOG.info("CassandraSecondaryIndex num indexes");
     }
     if (appName.equals(RedisPipelinedKeyValue.class.getSimpleName()) ||
         appName.equals(RedisHashPipelined.class.getSimpleName())) {
@@ -603,6 +608,8 @@ public class CmdLineOpts {
                       "enabled.");
     options.addOption("batch_write", false,
                       "[CassandraSecondaryIndex] Enable batch write of key values.");
+    options.addOption("num_indexes", true,
+                      "[CassandraSecondaryIndex] Number of indexes, default 1.");
 
     // Options for Redis Pipelined Key Value
     options.addOption(

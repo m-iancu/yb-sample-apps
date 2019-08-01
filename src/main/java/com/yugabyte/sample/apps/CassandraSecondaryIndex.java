@@ -13,6 +13,7 @@
 
 package com.yugabyte.sample.apps;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
@@ -50,6 +51,8 @@ public class CassandraSecondaryIndex extends CassandraKeyValue {
     // The number of unique keys to write. This determines the number of inserts (as opposed to
     // updates).
     appConfig.numUniqueKeysToWrite = NUM_UNIQUE_KEYS;
+
+    appConfig.numIndexes = 1;
   }
 
   // The default table name to create and use for CRUD ops.
@@ -60,16 +63,34 @@ public class CassandraSecondaryIndex extends CassandraKeyValue {
 
   @Override
   public List<String> getCreateTableStatements() {
-    return Arrays.asList(
-        String.format(
-            "CREATE TABLE IF NOT EXISTS %s (k varchar, v varchar, primary key (k)) %s;",
-            getTableName(),
-            appConfig.nonTransactionalIndex ? "" :  "WITH transactions = { 'enabled' : true }"),
-        String.format(
-            "CREATE INDEX IF NOT EXISTS %sByValue ON %s (v) %s;", getTableName(), getTableName(),
-            appConfig.nonTransactionalIndex ?
-            "WITH transactions = { 'enabled' : false, 'consistency_level' : 'user_enforced' }" :
-            ""));
+
+    StringBuilder sb = new StringBuilder();
+    List<String> stmts = new ArrayList<>();
+    stmts.add(""); //placeholder for create table.
+
+    sb.append("CREATE TABLE IF NOT EXISTS ");
+    sb.append(getTableName());
+    sb.append("(k varchar PRIMARY KEY");
+
+
+    for (int i = 0; i < appConfig.numIndexes; i++) {
+      String cname = "v" + (i + 1);
+      sb.append(", ").append(cname).append(" varchar");
+      String idx = String.format(
+          "CREATE INDEX IF NOT EXISTS %sByValue%s ON %s (%s) %s;", getTableName(), cname, getTableName(), cname,
+          appConfig.nonTransactionalIndex ?
+              "WITH transactions = { 'enabled' : false, 'consistency_level' : 'user_enforced' }" :
+              "");
+      stmts.add(idx);
+    }
+
+    sb.append(")");
+    if (!appConfig.nonTransactionalIndex) {
+      sb.append("WITH transactions = { 'enabled' : true }");
+    }
+    stmts.set(0, sb.toString());
+
+    return stmts;
   }
 
   public String getTableName() {
@@ -77,7 +98,7 @@ public class CassandraSecondaryIndex extends CassandraKeyValue {
   }
 
   private PreparedStatement getPreparedSelect()  {
-    return getPreparedSelect(String.format("SELECT k, v FROM %s WHERE v = ?;", getTableName()),
+    return getPreparedSelect(String.format("SELECT * FROM %s WHERE v1 = ?;", getTableName()),
                              appConfig.localReads);
   }
 
@@ -104,8 +125,28 @@ public class CassandraSecondaryIndex extends CassandraKeyValue {
   }
 
   protected PreparedStatement getPreparedInsert()  {
-    return getPreparedInsert(String.format("INSERT INTO %s (k, v) VALUES (?, ?);",
-                             getTableName()));
+    StringBuilder sb = new StringBuilder();
+    sb.append("INSERT INTO ").append(getTableName()).append("(k");
+    for (int i = 0; i < appConfig.numIndexes; i++) {
+      String cname = "v" + (i + 1);
+      sb.append(", ").append(cname);
+    }
+    sb.append(") VALUES ( ?");
+    for (int i = 0; i < appConfig.numIndexes; i++) {
+      sb.append(", ?");
+    }
+    sb.append(")");
+
+    return getPreparedInsert(sb.toString());
+  }
+
+  private Object[] getArgs(Key key) {
+    Object[] args = new String[appConfig.numIndexes + 1];
+    args[0] = key.asString();
+    for (int j = 0; j < appConfig.numIndexes; j++) {
+      args[j + 1] = key.getValueStr();
+    }
+    return args;
   }
 
   @Override
@@ -119,7 +160,7 @@ public class CassandraSecondaryIndex extends CassandraKeyValue {
         for (int i = 0; i < appConfig.cassandraBatchSize; i++) {
           Key key = getSimpleLoadGenerator().getKeyToWrite();
           keys.add(key);
-          batch.add(insert.bind(key.asString(), key.getValueStr()));
+          batch.add(insert.bind(getArgs(key)));
         }
         // Do the write to Cassandra.
         ResultSet resultSet = getCassandraClient().execute(batch);
@@ -136,7 +177,7 @@ public class CassandraSecondaryIndex extends CassandraKeyValue {
         keys.add(key);
 
         // Do the write to Cassandra.
-        BoundStatement insert = getPreparedInsert().bind(key.asString(), key.getValueStr());
+        BoundStatement insert = getPreparedInsert().bind(getArgs(key));
         ResultSet resultSet = getCassandraClient().execute(insert);
         LOG.debug("Wrote key: " + key.toString() + ", return code: " + resultSet.toString());
         getSimpleLoadGenerator().recordWriteSuccess(key);

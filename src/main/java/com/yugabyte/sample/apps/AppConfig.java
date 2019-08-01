@@ -154,6 +154,9 @@ public class AppConfig {
   // Enable batch write.
   public boolean batchWrite = false;
 
+  // Set num indexes (for Secondary Index workloads that support it).
+  public int numIndexes = 1;
+
   // Username to connect to the YQL client.
   public String cassandraUsername = null;
 
