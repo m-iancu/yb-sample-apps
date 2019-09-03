@@ -50,9 +50,11 @@ public class SqlInserts extends AppBase {
   private static final String DEFAULT_TABLE_NAME = "PostgresqlKeyValue";
 
   // The shared prepared select statement for fetching the data.
+  private volatile String preparedSelectSql = null;
   private volatile PreparedStatement preparedSelect = null;
 
   // The shared prepared insert statement for inserting the data.
+  private volatile String preparedInsertSql = null;
   private volatile PreparedStatement preparedInsert = null;
 
   // Lock for initializing prepared statement objects.
@@ -67,27 +69,37 @@ public class SqlInserts extends AppBase {
    */
   @Override
   public void dropTable() throws Exception {
-    Connection connection = getPostgresConnection();
-    connection.createStatement().execute("DROP TABLE " + getTableName());
-    LOG.info(String.format("Dropped table: %s", getTableName()));
+    try (Connection connection = getPostgresConnection()) {
+      connection.createStatement().execute("DROP TABLE " + getTableName());
+      LOG.info(String.format("Dropped table: %s", getTableName()));
+    }
   }
 
   @Override
   public void createTablesIfNeeded() throws Exception {
-    Connection connection = getPostgresConnection();
+    try (Connection connection = getPostgresConnection()) {
 
-    // (Re)Create the table (every run should start cleanly with an empty table).
-    connection.createStatement().execute(
-        String.format("DROP TABLE IF EXISTS %s", getTableName()));
-    LOG.info("Dropping any table(s) left from previous runs if any");
-    connection.createStatement().execute(
-        String.format("CREATE TABLE %s (k text PRIMARY KEY, v text)", getTableName()));
-    LOG.info(String.format("Created table: %s", getTableName()));
+      // (Re)Create the table (every run should start cleanly with an empty table).
+      connection.createStatement().execute(
+          String.format("DROP TABLE IF EXISTS %s", getTableName()));
+      LOG.info("Dropping any table(s) left from previous runs if any");
+      connection.createStatement().execute(
+          String.format("CREATE TABLE %s (k text PRIMARY KEY, v text)", getTableName()));
+      LOG.info(String.format("Created table: %s", getTableName()));
+      Thread.sleep(500);
+    }
   }
 
   public String getTableName() {
     String tableName = appConfig.tableName != null ? appConfig.tableName : DEFAULT_TABLE_NAME;
     return tableName.toLowerCase();
+  }
+
+  private PreparedStatement getPreparedSelect(Connection connection) throws Exception {
+    if (preparedSelectSql == null) {
+      preparedSelectSql = String.format("SELECT k, v FROM %s WHERE k = ?;", getTableName());
+    }
+    return connection.prepareStatement(preparedSelectSql);
   }
 
   private PreparedStatement getPreparedSelect() throws Exception {
@@ -107,7 +119,14 @@ public class SqlInserts extends AppBase {
     }
 
     try {
-      PreparedStatement statement = getPreparedSelect();
+      Connection connection = null;
+      PreparedStatement statement;
+      if (appConfig.useYsqlCluster) {
+        connection = getPostgresConnection();
+        statement = getPreparedSelect(connection);
+      } else {
+        statement = getPreparedSelect();
+      }
       statement.setString(1, key.asString());
       try (ResultSet rs = statement.executeQuery()) {
         if (!rs.next()) {
@@ -125,11 +144,21 @@ public class SqlInserts extends AppBase {
           return 0;
         }
       }
+      if (appConfig.useYsqlCluster) {
+        connection.close();
+      }
     } catch (Exception e) {
       LOG.fatal("Failed reading value: " + key.getValueStr(), e);
       return 0;
     }
     return 1;
+  }
+
+  private PreparedStatement getPreparedInsert(Connection connection) throws Exception {
+    if (preparedInsertSql == null) {
+      preparedInsertSql = String.format("INSERT INTO %s (k, v) VALUES (?, ?);", getTableName());
+    }
+    return connection.prepareStatement(preparedInsertSql);
   }
 
   private PreparedStatement getPreparedInsert() throws Exception {
@@ -149,7 +178,14 @@ public class SqlInserts extends AppBase {
 
     int result = 0;
     try {
-      PreparedStatement statement = getPreparedInsert();
+      Connection connection = null;
+      PreparedStatement statement;
+      if (appConfig.useYsqlCluster) {
+        connection = getPostgresConnection();
+        statement = getPreparedInsert(connection);
+      } else {
+        statement = getPreparedInsert();
+      }
       // Prefix hashcode to ensure generated keys are random and not sequential.
       statement.setString(1, key.asString());
       statement.setString(2, key.getValueStr());
@@ -157,6 +193,9 @@ public class SqlInserts extends AppBase {
       LOG.debug("Wrote key: " + key.asString() + ", " + key.getValueStr() + ", return code: " +
           result);
       getSimpleLoadGenerator().recordWriteSuccess(key);
+      if (appConfig.useYsqlCluster) {
+        connection.close();
+      }
     } catch (Exception e) {
       getSimpleLoadGenerator().recordWriteFailure(key);
       LOG.fatal("Failed writing key: " + key.asString(), e);

@@ -67,10 +67,17 @@
       <version>2.8.0</version>
     </dependency>
     <dependency>
+      <groupId>com.yugabyte</groupId>
+      <artifactId>ysql</artifactId>
+      <version>42.2.7-yb-1-SNAPSHOT</version>
+    </dependency>
+<!--
+    <dependency>
       <groupId>org.postgresql</groupId>
       <artifactId>postgresql</artifactId>
       <version>42.2.2</version>
     </dependency>
+-->
   </dependencies>
 
   <build>

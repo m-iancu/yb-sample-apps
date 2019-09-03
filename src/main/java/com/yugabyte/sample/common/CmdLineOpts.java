@@ -317,6 +317,9 @@ public class CmdLineOpts {
     if (commandLine.hasOption("ssl_cert")) {
       AppBase.appConfig.sslCert = commandLine.getOptionValue("ssl_cert");
     }
+    if (commandLine.hasOption("use_ysql_cluster")) {
+      AppBase.appConfig.useYsqlCluster = true;
+    }
   }
 
   /**
@@ -579,6 +582,7 @@ public class CmdLineOpts {
         "The number of client connections to establish to each host in the YugaByte DB cluster.");
     options.addOption("ssl_cert", true, 
       "Use an SSL connection while connecting to YugaByte.");
+    options.addOption("use_ysql_cluster", false, "Use ysql cluster client.");
 
     // Options for CassandraTimeseries workload.
     options.addOption("num_users", true, "[CassandraTimeseries] The total number of users.");

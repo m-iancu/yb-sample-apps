@@ -33,6 +33,7 @@ import java.util.zip.Adler32;
 import java.util.zip.Checksum;
 
 import com.datastax.driver.core.ConsistencyLevel;
+import com.yugabyte.YBClusterAwareDataSource;
 import org.apache.log4j.Logger;
 
 import com.datastax.driver.core.Cluster;
@@ -62,6 +63,7 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
+import javax.sql.DataSource;
 
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
@@ -110,6 +112,9 @@ public abstract class AppBase implements MetricsTracker.StatusMessageAppender {
   private volatile Pipeline jedisPipeline = null;
   private List<ContactPoint> redisServerInUse = null;
   private volatile JedisCluster jedisCluster = null;
+  // The SQL client.
+  private static volatile DataSource sql_datasource = null;
+
   // Instances of the load generator.
   private static volatile SimpleLoadGenerator simpleLoadGenerator = null;
   private static volatile RedisHashLoadGenerator redisHashLoadGenerator = null;
@@ -140,16 +145,35 @@ public abstract class AppBase implements MetricsTracker.StatusMessageAppender {
     return getPostgresConnection(appConfig.defaultPostgresDatabase);
   }
 
-  protected Connection getPostgresConnection(String database) throws Exception {
-    Class.forName("org.postgresql.Driver");
+  protected String getYsqlUrl(String database) {
     ContactPoint contactPoint = getRandomContactPoint();
     Properties props = new Properties();
     props.setProperty("user", "postgres");
     props.setProperty("sslmode", "disable");
-    String connectStr = String.format("jdbc:postgresql://%s:%d/%s", contactPoint.getHost(),
-                                                                    contactPoint.getPort(),
-                                                                    database);
-    return DriverManager.getConnection(connectStr, props);
+    return String.format("jdbc:postgresql://%s:%d/%s",
+                         contactPoint.getHost(),
+                         contactPoint.getPort(),
+                         database);
+  }
+
+  protected Connection getPostgresConnection(String database) throws Exception {
+    if (appConfig.useYsqlCluster) {
+      if (sql_datasource == null) {
+        sql_datasource = new YBClusterAwareDataSource(getYsqlUrl(database));
+      }
+      // TODO -- check/ensure that existing datasource is correct (i.e. right database).
+      return sql_datasource.getConnection();
+    } else {
+      Class.forName("org.postgresql.Driver");
+      ContactPoint contactPoint = getRandomContactPoint();
+      Properties props = new Properties();
+      props.setProperty("user", "postgres");
+      props.setProperty("sslmode", "disable");
+      String connectStr = String.format("jdbc:postgresql://%s:%d/%s", contactPoint.getHost(),
+                                        contactPoint.getPort(),
+                                        database);
+      return DriverManager.getConnection(connectStr, props);
+    }
   }
 
   protected static void createKeyspace(Session session, String ks) {
