@@ -65,6 +65,7 @@ public class CmdLineOpts {
     RedisPipelinedKeyValue.class,
     RedisHashPipelined.class,
     RedisYBClientKeyValue.class,
+    SqlDataLoad.class,
     SqlForeignKeysAndJoins.class,
     SqlInserts.class,
     SqlSecondaryIndex.class,
@@ -314,6 +315,55 @@ public class CmdLineOpts {
     if (commandLine.hasOption("ssl_cert")) {
       AppBase.appConfig.sslCert = commandLine.getOptionValue("ssl_cert");
     }
+
+    if (appName.equals(SqlDataLoad.class.getSimpleName())) {
+
+      if (commandLine.hasOption("num_value_columns")) {
+        AppBase.appConfig.numValueColumns =
+                Integer.parseInt(commandLine.getOptionValue("num_value_columns"));
+      }
+      LOG.info(String.format("SqlDataLoad: will use %d value columns for the main table",
+               AppBase.appConfig.numValueColumns));
+
+      if (commandLine.hasOption("num_indexes")) {
+        AppBase.appConfig.numIndexes =
+                Integer.parseInt(commandLine.getOptionValue("num_indexes"));
+      }
+      LOG.info(String.format("SqlDataLoad: will create %d secondary indexes on the main table",
+                             AppBase.appConfig.numIndexes));
+
+      if (commandLine.hasOption("num_foreign_keys")) {
+        AppBase.appConfig.numForeignKeys =
+                Integer.parseInt(commandLine.getOptionValue("num_foreign_keys"));
+      }
+      LOG.info(String.format("SqlDataLoad: will create %d foreign key constraints the main table",
+                             AppBase.appConfig.numForeignKeys));
+
+      if (commandLine.hasOption("num_foreign_key_table_rows")) {
+        AppBase.appConfig.numForeignKeyTableRows =
+                Integer.parseInt(commandLine.getOptionValue("num_foreign_key_table_rows"));
+      }
+      LOG.info(String.format("SqlDataLoad: will preload foreign key tables with %d rows",
+                             AppBase.appConfig.numForeignKeyTableRows));
+
+      if (commandLine.hasOption("num_consecutive_rows_with_same_fk")) {
+        AppBase.appConfig.numConsecutiveRowsWithSameFk =
+                Integer.parseInt(commandLine.getOptionValue("num_consecutive_rows_with_same_fk"));
+      }
+      LOG.info(String.format("SqlDataLoad: Will use a new fk every %d rows",
+                             AppBase.appConfig.numConsecutiveRowsWithSameFk));
+
+      if (commandLine.hasOption("batch_size")) {
+        AppBase.appConfig.batchSize = Integer.parseInt(commandLine.getOptionValue("batch_size"));
+      }
+      if (AppBase.appConfig.batchSize > 0) {
+        LOG.info(String.format("SqlDataLoad: Will use a (write) batch size of %d",
+                               AppBase.appConfig.batchSize));
+      } else {
+        LOG.info("Will not use batching");
+      }
+    }
+
   }
 
   /**
@@ -673,6 +723,25 @@ public class CmdLineOpts {
         "subkey_value_max_size", true,
         "[RedisHashPipelined] If using zipf distribution to choose value sizes, " +
         "specifies an upper bound on the value sizes.");
+
+    // Options for SQL DataLoad.
+    options.addOption("num_value_columns", true,
+                      "[SqlDataLoad] Number of value columns the target table should have.");
+
+    options.addOption("num_indexes", true,
+                      "[SqlDataLoad] Number of secondary indexes on the target table.");
+
+    options.addOption("num_foreign_keys", true,
+                      "[SqlDataLoad] Number of secondary indexes on the target table.");
+
+    options.addOption("num_foreign_key_table_rows", true,
+                      "[SqlDataLoad] Number of secondary indexes on the target table.");
+
+    options.addOption("num_consecutive_rows_with_same_fk", true,
+                      "[SqlDataLoad] Number of secondary indexes on the target table.");
+
+    options.addOption("batch_size", true,
+                      "[SqlDataLoad] Number of inserts to put in one batch.");
 
     // First check if a "--help" argument is passed with a simple parser. Note that if we add
     // required args, then the help string would not work. See:
