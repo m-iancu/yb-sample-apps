@@ -225,6 +225,52 @@ public abstract class AppBase implements MetricsTracker.StatusMessageAppender {
     }
   }
 
+  protected Cluster.Builder createClusterBuilder(List<ContactPoint> contactPoints) {
+    Cluster.Builder builder = Cluster.builder();
+    if (appConfig.dbUsername != null) {
+      if (appConfig.dbPassword == null) {
+        throw new IllegalArgumentException("Password required when providing a username");
+      }
+      builder = builder
+              .withCredentials(appConfig.dbUsername, appConfig.dbPassword);
+    }
+    if (appConfig.sslCert != null) {
+      builder = builder
+              .withSSL(createSSLHandler(appConfig.sslCert));
+    }
+    Integer port = null;
+    SocketOptions socketOptions = new SocketOptions();
+    if (appConfig.cqlConnectTimeoutMs > 0) {
+      socketOptions.setConnectTimeoutMillis(appConfig.cqlConnectTimeoutMs);
+    }
+    if (appConfig.cqlReadTimeoutMs > 0) {
+      socketOptions.setReadTimeoutMillis(appConfig.cqlReadTimeoutMs);
+    }
+    builder.withSocketOptions(socketOptions);
+    for (ContactPoint cp : contactPoints) {
+      if (port == null) {
+        port = cp.getPort();
+        builder.withPort(port);
+      } else if (port != cp.getPort()) {
+        throw new IllegalArgumentException("Using multiple CQL ports is not supported.");
+      }
+      builder.addContactPoint(cp.getHost());
+    }
+    LOG.info("Connecting with " + appConfig.concurrentClients + " clients to nodes: "
+                     + builder.getContactPoints()
+                              .stream().map(it -> it.toString()).collect(Collectors.joining(",")));
+    PoolingOptions poolingOptions = new PoolingOptions();
+    poolingOptions
+            .setCoreConnectionsPerHost(HostDistance.LOCAL, appConfig.concurrentClients)
+            .setMaxConnectionsPerHost(HostDistance.LOCAL, appConfig.concurrentClients)
+            .setCoreConnectionsPerHost(HostDistance.REMOTE, appConfig.concurrentClients)
+            .setMaxConnectionsPerHost(HostDistance.REMOTE, appConfig.concurrentClients);
+    return builder.withLoadBalancingPolicy(getLoadBalancingPolicy())
+                   .withPoolingOptions(poolingOptions)
+                   .withQueryOptions(new QueryOptions().setDefaultIdempotence(true))
+                   .withRetryPolicy(new LoggingRetryPolicy(DefaultRetryPolicy.INSTANCE));
+  }
+
   /**
    * Private method that is thread-safe and creates the Cassandra client. Exactly one calling thread
    * will succeed in creating the client. This method does nothing for the other threads.

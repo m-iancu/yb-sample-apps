@@ -6,7 +6,9 @@ import org.apache.log4j.Logger;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Base class for all workloads that are based on key value tables.
@@ -41,9 +43,15 @@ public abstract class CassandraKeyValueBase extends AppBase {
   // Lock for initializing prepared statement objects.
   private static final Object prepareInitLock = new Object();
 
+  private Map<SimpleLoadGenerator.Key, ResultSetFuture> outstandingAsyncRequests = new HashMap<>();
+
   public CassandraKeyValueBase() {
     buffer = new byte[appConfig.valueSize];
   }
+
+  protected Cluster localCassandraCluster = null;
+  protected Session localCassandraSession = null;
+  protected PreparedStatement localPreparedInsert = null;
 
   /**
    * Drop the table created by this app.
@@ -129,15 +137,28 @@ public abstract class CassandraKeyValueBase extends AppBase {
   }
 
   protected PreparedStatement getPreparedInsert(String insertStmt)  {
-    if (preparedInsert == null) {
-      synchronized (prepareInitLock) {
-        if (preparedInsert == null) {
-          // Create the prepared statement object.
-          preparedInsert = getCassandraClient().prepare(insertStmt);
+    if (true) {
+      if (localCassandraCluster == null) {
+        localCassandraCluster = createClusterBuilder(configuration.getContactPoints()).build();
+        localCassandraSession = localCassandraCluster.connect();
+        // Will create keyspace with "if not exists" option.
+        createKeyspace(localCassandraSession, keyspace);
+      }
+      if (localPreparedInsert == null) {
+        localPreparedInsert = localCassandraSession.prepare(insertStmt);
+      }
+      return localPreparedInsert;
+    } else {
+      if (preparedInsert == null) {
+        synchronized (prepareInitLock) {
+          if (preparedInsert == null) {
+            // Create the prepared statement object.
+            preparedInsert = getCassandraClient().prepare(insertStmt);
+          }
         }
       }
+      return preparedInsert;
     }
-    return preparedInsert;
   }
 
   protected abstract BoundStatement bindInsert(String key, ByteBuffer value);
@@ -147,6 +168,28 @@ public abstract class CassandraKeyValueBase extends AppBase {
     SimpleLoadGenerator.Key key = getSimpleLoadGenerator().getKeyToWrite();
     if (key == null) {
       return 0;
+    }
+
+    int write_count = 0;
+    if (true) {
+      int max_queue_size = getCassandraClient().getCluster().getConfiguration().getPoolingOptions()
+                                               .getMaxRequestsPerConnection(HostDistance.REMOTE);
+      if (outstandingAsyncRequests.size() >= appConfig.concurrentClients * (max_queue_size - 1)) {
+        //LOG.info("Got here: " + outstandingAsyncRequests.size());
+        for (Map.Entry<SimpleLoadGenerator.Key, ResultSetFuture> entry :
+                outstandingAsyncRequests.entrySet()) {
+          try {
+            ResultSet rs = entry.getValue().get();
+            LOG.debug("Wrote key: " + key.toString() + ", return code: " + rs.toString());
+            getSimpleLoadGenerator().recordWriteSuccess(entry.getKey());
+            write_count++;
+          } catch (Exception e) {
+            getSimpleLoadGenerator().recordWriteFailure(entry.getKey());
+            LOG.info("Got exception: " + e.getMessage());
+          }
+        }
+        outstandingAsyncRequests.clear();
+      }
     }
 
     try {
@@ -159,10 +202,16 @@ public abstract class CassandraKeyValueBase extends AppBase {
         byte[] value = getRandomValue(key);
         insert = bindInsert(key.asString(), ByteBuffer.wrap(value));
       }
-      ResultSet resultSet = getCassandraClient().execute(insert);
-      LOG.debug("Wrote key: " + key.toString() + ", return code: " + resultSet.toString());
-      getSimpleLoadGenerator().recordWriteSuccess(key);
-      return 1;
+
+      if (true) {
+        outstandingAsyncRequests.put(key, localCassandraSession.executeAsync(insert));
+        return write_count;
+      } else {
+        ResultSet resultSet = getCassandraClient().execute(insert);
+        LOG.debug("Wrote key: " + key.toString() + ", return code: " + resultSet.toString());
+        getSimpleLoadGenerator().recordWriteSuccess(key);
+        return 1;
+      }
     } catch (Exception e) {
       getSimpleLoadGenerator().recordWriteFailure(key);
       throw e;
