@@ -6,7 +6,9 @@ import org.apache.log4j.Logger;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Base class for all workloads that are based on key value tables.
@@ -41,9 +43,19 @@ public abstract class CassandraKeyValueBase extends AppBase {
   // Lock for initializing prepared statement objects.
   private static final Object prepareInitLock = new Object();
 
+  private Map<SimpleLoadGenerator.Key, ResultSetFuture> outstandingAsyncReadRequests =
+          new HashMap<>();
+  private Map<SimpleLoadGenerator.Key, ResultSetFuture> outstandingAsyncWriteRequests =
+          new HashMap<>();
+
   public CassandraKeyValueBase() {
     buffer = new byte[appConfig.valueSize];
   }
+
+  protected Cluster localCassandraCluster = null;
+  protected Session localCassandraSession = null;
+  protected PreparedStatement localPreparedInsert = null;
+  protected PreparedStatement localPreparedSelect = null;
 
   /**
    * Drop the table created by this app.
@@ -54,19 +66,32 @@ public abstract class CassandraKeyValueBase extends AppBase {
   }
 
   protected PreparedStatement getPreparedSelect(String selectStmt, boolean localReads)  {
-    if (preparedSelect == null) {
-      synchronized (prepareInitLock) {
-        if (preparedSelect == null) {
-          // Create the prepared statement object.
-          preparedSelect = getCassandraClient().prepare(selectStmt);
-          if (localReads) {
-            LOG.debug("Doing local reads");
-            preparedSelect.setConsistencyLevel(ConsistencyLevel.ONE);
+    if (appConfig.useAsyncExecute) {
+      if (localCassandraCluster == null) {
+        localCassandraCluster = createClusterBuilder(configuration.getContactPoints()).build();
+        localCassandraSession = localCassandraCluster.connect();
+        // Will create keyspace with "if not exists" option.
+        createKeyspace(localCassandraSession, keyspace);
+      }
+      if (localPreparedSelect == null) {
+        localPreparedSelect = localCassandraSession.prepare(selectStmt);
+      }
+      return localPreparedSelect;
+    } else {
+      if (preparedSelect == null) {
+        synchronized (prepareInitLock) {
+          if (preparedSelect == null) {
+            // Create the prepared statement object.
+            preparedSelect = getCassandraClient().prepare(selectStmt);
+            if (localReads) {
+              LOG.debug("Doing local reads");
+              preparedSelect.setConsistencyLevel(ConsistencyLevel.ONE);
+            }
           }
         }
       }
+      return preparedSelect;
     }
-    return preparedSelect;
   }
 
   protected abstract String getDefaultTableName();
@@ -98,46 +123,102 @@ public abstract class CassandraKeyValueBase extends AppBase {
   @Override
   public long doRead() {
     SimpleLoadGenerator.Key key = getSimpleLoadGenerator().getKeyToRead();
+
     if (key == null) {
       // There are no keys to read yet.
       return 0;
     }
+    int read_count = 0;
+
+    if (appConfig.useAsyncExecute) {
+      if (outstandingAsyncReadRequests.size() >= appConfig.maxAsyncQueueSize) {
+        // LOG.info("Got here: " + outstandingAsyncReadRequests.size());
+        for (Map.Entry<SimpleLoadGenerator.Key, ResultSetFuture> entry :
+                outstandingAsyncReadRequests.entrySet()) {
+          try {
+            ResultSet rs = entry.getValue().get();
+            List<Row> rows = rs.all();
+            if (rows.size() != 1) {
+              // If TTL is enabled, turn off correctness validation.
+              if (appConfig.tableTTLSeconds <= 0) {
+                LOG.fatal("Read key: " + entry.getKey().asString() + " expected 1 row in result, got " + rows.size());
+              }
+              return read_count;
+            }
+            if (appConfig.valueSize == 0) {
+              ByteBuffer buf = rows.get(0).getBytes(1);
+              String value = new String(buf.array());
+              entry.getKey().verify(value);
+            } else {
+              ByteBuffer value = rows.get(0).getBytes(1);
+              byte[] bytes = new byte[value.capacity()];
+              value.get(bytes);
+              verifyRandomValue(entry.getKey(), bytes);
+            }
+            LOG.debug("Read key: " + entry.getKey().toString());
+            read_count++;
+          } catch (Exception e) {
+            LOG.error("Got exception: " + e.getMessage());
+          }
+        }
+        outstandingAsyncReadRequests.clear();
+      }
+    }
+
     // Do the read from Cassandra.
     // Bind the select statement.
     BoundStatement select = bindSelect(key.asString());
-    ResultSet rs = getCassandraClient().execute(select);
-    List<Row> rows = rs.all();
-    if (rows.size() != 1) {
-      // If TTL is enabled, turn off correctness validation.
-      if (appConfig.tableTTLSeconds <= 0) {
-        LOG.fatal("Read key: " + key.asString() + " expected 1 row in result, got " + rows.size());
+    if (appConfig.useAsyncExecute) {
+      outstandingAsyncReadRequests.put(key, localCassandraSession.executeAsync(select));
+      return read_count;
+    } else {
+      ResultSet rs = getCassandraClient().execute(select);
+      List<Row> rows = rs.all();
+      if (rows.size() != 1) {
+        // If TTL is enabled, turn off correctness validation.
+        if (appConfig.tableTTLSeconds <= 0) {
+          LOG.fatal("Read key: " + key.asString() + " expected 1 row in result, got " + rows.size());
+        }
+        return 1;
       }
+      if (appConfig.valueSize == 0) {
+        ByteBuffer buf = rows.get(0).getBytes(1);
+        String value = new String(buf.array());
+        key.verify(value);
+      } else {
+        ByteBuffer value = rows.get(0).getBytes(1);
+        byte[] bytes = new byte[value.capacity()];
+        value.get(bytes);
+        verifyRandomValue(key, bytes);
+      }
+      LOG.debug("Read key: " + key.toString());
       return 1;
     }
-    if (appConfig.valueSize == 0) {
-      ByteBuffer buf = rows.get(0).getBytes(1);
-      String value = new String(buf.array());
-      key.verify(value);
-    } else {
-      ByteBuffer value = rows.get(0).getBytes(1);
-      byte[] bytes = new byte[value.capacity()];
-      value.get(bytes);
-      verifyRandomValue(key, bytes);
-    }
-    LOG.debug("Read key: " + key.toString());
-    return 1;
   }
 
   protected PreparedStatement getPreparedInsert(String insertStmt)  {
-    if (preparedInsert == null) {
-      synchronized (prepareInitLock) {
-        if (preparedInsert == null) {
-          // Create the prepared statement object.
-          preparedInsert = getCassandraClient().prepare(insertStmt);
+    if (appConfig.useAsyncExecute) {
+      if (localCassandraCluster == null) {
+        localCassandraCluster = createClusterBuilder(configuration.getContactPoints()).build();
+        localCassandraSession = localCassandraCluster.connect();
+        // Will create keyspace with "if not exists" option.
+        createKeyspace(localCassandraSession, keyspace);
+      }
+      if (localPreparedInsert == null) {
+        localPreparedInsert = localCassandraSession.prepare(insertStmt);
+      }
+      return localPreparedInsert;
+    } else {
+      if (preparedInsert == null) {
+        synchronized (prepareInitLock) {
+          if (preparedInsert == null) {
+            // Create the prepared statement object.
+            preparedInsert = getCassandraClient().prepare(insertStmt);
+          }
         }
       }
+      return preparedInsert;
     }
-    return preparedInsert;
   }
 
   protected abstract BoundStatement bindInsert(String key, ByteBuffer value);
@@ -147,6 +228,26 @@ public abstract class CassandraKeyValueBase extends AppBase {
     SimpleLoadGenerator.Key key = getSimpleLoadGenerator().getKeyToWrite();
     if (key == null) {
       return 0;
+    }
+
+    int write_count = 0;
+    if (appConfig.useAsyncExecute) {
+      if (outstandingAsyncWriteRequests.size() >= appConfig.maxAsyncQueueSize) {
+        // LOG.info("Got here: " + outstandingAsyncRequests.size());
+        for (Map.Entry<SimpleLoadGenerator.Key, ResultSetFuture> entry :
+                outstandingAsyncWriteRequests.entrySet()) {
+          try {
+            ResultSet rs = entry.getValue().get();
+            LOG.debug("Wrote key: " + key.toString() + ", return code: " + rs.toString());
+            getSimpleLoadGenerator().recordWriteSuccess(entry.getKey());
+            write_count++;
+          } catch (Exception e) {
+            getSimpleLoadGenerator().recordWriteFailure(entry.getKey());
+            LOG.info("Got exception: " + e.getMessage());
+          }
+        }
+        outstandingAsyncWriteRequests.clear();
+      }
     }
 
     try {
@@ -159,10 +260,16 @@ public abstract class CassandraKeyValueBase extends AppBase {
         byte[] value = getRandomValue(key);
         insert = bindInsert(key.asString(), ByteBuffer.wrap(value));
       }
-      ResultSet resultSet = getCassandraClient().execute(insert);
-      LOG.debug("Wrote key: " + key.toString() + ", return code: " + resultSet.toString());
-      getSimpleLoadGenerator().recordWriteSuccess(key);
-      return 1;
+
+      if (appConfig.useAsyncExecute) {
+        outstandingAsyncWriteRequests.put(key, localCassandraSession.executeAsync(insert));
+        return write_count;
+      } else {
+        ResultSet resultSet = getCassandraClient().execute(insert);
+        LOG.debug("Wrote key: " + key.toString() + ", return code: " + resultSet.toString());
+        getSimpleLoadGenerator().recordWriteSuccess(key);
+        return 1;
+      }
     } catch (Exception e) {
       getSimpleLoadGenerator().recordWriteFailure(key);
       throw e;

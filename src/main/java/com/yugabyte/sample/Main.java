@@ -173,6 +173,8 @@ public class Main {
         app.enableMetrics();
       }
 
+      int threadStartupIntervalMs = cmdLineOpts.getThreadStartupIntervalMs();
+
       // Create the reader and writer threads.
       int idx = 0;
       for (; idx < cmdLineOpts.getNumWriterThreads(); idx++) {
@@ -187,7 +189,7 @@ public class Main {
       // Start the reader and writer threads.
       for (IOPSThread iopsThread : iopsThreads) {
         iopsThread.start();
-        Thread.sleep(50);
+        Thread.sleep(threadStartupIntervalMs);
       }
 
       // Wait for the various threads to exit.

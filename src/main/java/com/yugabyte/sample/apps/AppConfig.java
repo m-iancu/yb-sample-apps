@@ -176,6 +176,10 @@ public class AppConfig {
   // Number of Event Types per device to simulate data for CassandraEventData workload
   public int num_event_types = 100;
 
+  // Configurations for async writes.
+  public boolean useAsyncExecute = false;
+  public int maxAsyncQueueSize = 1024;
+
   // Configurations for SqlDataLoad workload.
   public int numValueColumns = 1;
   public int numIndexes = 0;

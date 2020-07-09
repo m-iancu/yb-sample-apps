@@ -81,6 +81,8 @@ public class CmdLineOpts {
   int numReaderThreads;
   // The number of writer threads to spawn for OLTP apps.
   int numWriterThreads;
+  // How to stagger starting up the worker threads.
+  int threadStartupIntervalMs = 50; // default
   boolean readOnly = false;
   boolean localReads = false;
   // Random number generator.
@@ -207,6 +209,17 @@ public class CmdLineOpts {
         }
         LOG.info("Batch size : " + AppBase.appConfig.batchSize);
       }
+    }
+
+    if (commandLine.hasOption("max_async_queue_size")) {
+      AppBase.appConfig.maxAsyncQueueSize =
+              Integer.parseInt(commandLine.getOptionValue("max_async_queue_size"));
+    }
+
+    if (commandLine.hasOption("use_async_execute")) {
+      LOG.info("Will use executeAsync for read and write operations, with a max queue size of " +
+               AppBase.appConfig.maxAsyncQueueSize + ".");
+      AppBase.appConfig.useAsyncExecute = true;
     }
 
     if (appName.equals(CassandraPersonalization.class.getSimpleName())) {
@@ -418,6 +431,10 @@ public class CmdLineOpts {
     return numWriterThreads;
   }
 
+  public int getThreadStartupIntervalMs() {
+    return threadStartupIntervalMs;
+  }
+
   public boolean getReadOnly() {
     return readOnly;
   }
@@ -481,6 +498,13 @@ public class CmdLineOpts {
     }
     LOG.info("Num reader threads: " + numReaderThreads +
              ", num writer threads: " + numWriterThreads);
+
+    if (cmd.hasOption("thread_startup_interval_ms")) {
+      threadStartupIntervalMs = Integer.parseInt(cmd.getOptionValue("thread_startup_interval_ms"));
+      LOG.info("Using a " +  threadStartupIntervalMs + " milliseconds sleep," +
+                       " when starting the worker threads.");
+
+    }
   }
 
   private void initializeNumKeys(CommandLine cmd) {
@@ -603,6 +627,9 @@ public class CmdLineOpts {
     options.addOption("num_threads", true, "The total number of threads.");
     options.addOption("num_threads_read", true, "The number of threads that perform reads.");
     options.addOption("num_threads_write", true, "The number of threads that perform writes.");
+    options.addOption("thread_startup_interval_ms", true, "How long to wait between each two " +
+                              "worker threads while starting up");
+
     options.addOption("num_writes", true, "The total number of writes to perform.");
     options.addOption("num_reads", true, "The total number of reads to perform.");
     options.addOption(
@@ -641,6 +668,12 @@ public class CmdLineOpts {
       "Use an SSL connection while connecting to YugaByte.");
     options.addOption("batch_size", true,
                       "Number of keys to write in a batch (for apps that support batching).");
+
+    // Async execute options.
+    options.addOption("use_async_execute", false,
+                      "Use executeAsync instead of execute for reads/writes.");
+    options.addOption("max_async_queue_size", true,
+                      "Max queue of ops allowed for async execute");
 
     // Options for CassandraTimeseries workload.
     options.addOption("num_users", true, "[CassandraTimeseries] The total number of users.");
